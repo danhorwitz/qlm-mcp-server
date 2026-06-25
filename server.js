@@ -124,6 +124,11 @@ const TOOLS = [
     description: "Test the connection to QLM and verify credentials are working.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "get_recent_orders",
+    description: "Get recent orders from QLM.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 async function callTool(name, args) {
@@ -162,6 +167,8 @@ async function callTool(name, args) {
         dateLastProductUpdate: "0001-01-01T00:00:00",
         dateLastAffiliatesUpdate: "0001-01-01T00:00:00",
       });
+    case "get_recent_orders":
+      return qlmSoap("GetRecentOrdersHttp", {});
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
