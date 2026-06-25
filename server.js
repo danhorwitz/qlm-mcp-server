@@ -17,11 +17,11 @@ const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
   : `http://localhost:${PORT}`;
 
 if (!QLM_BASE_URL || !QLM_VENDOR || !QLM_PASSWORD) {
-  console.error("Missing required environment variables: QLM_BASE_URL, QLM_VENDOR, QLM_PASSWORD");
+  console.error("Missing required env vars: QLM_BASE_URL, QLM_VENDOR, QLM_PASSWORD");
   process.exit(1);
 }
 
-// ─── OAuth In-Memory Stores ─────────────────────────────────────────────────
+// ─── OAuth Stores ───────────────────────────────────────────────────────────
 const registeredClients = new Map();
 const authCodes = new Map();
 const accessTokens = new Set();
@@ -40,9 +40,10 @@ async function qlmRequest(method, params = {}) {
       url.searchParams.set(key, value);
     }
   }
+  console.log(`QLM request: ${method}`);
   const response = await fetch(url.toString());
   if (!response.ok) {
-    throw new Error(`QLM API HTTP error: ${response.status} ${response.statusText}`);
+    throw new Error(`QLM API error: ${response.status} ${response.statusText}`);
   }
   const text = await response.text();
   try {
@@ -56,7 +57,7 @@ async function qlmRequest(method, params = {}) {
 const TOOLS = [
   {
     name: "get_license_info",
-    description: "Look up full details for a license by its activation key.",
+    description: "Look up full license details by activation key — product, version, seats, expiry, status.",
     inputSchema: {
       type: "object",
       properties: {
@@ -67,7 +68,7 @@ const TOOLS = [
   },
   {
     name: "get_activation_status",
-    description: "Check activation status of a license — seats used, computers activated, active/inactive.",
+    description: "Check activation status for a license key — seats used, computers activated, active/inactive.",
     inputSchema: {
       type: "object",
       properties: {
@@ -88,14 +89,25 @@ const TOOLS = [
     },
   },
   {
-    name: "get_customer_orders",
-    description: "Get all orders for a customer email address.",
+    name: "get_customer_info",
+    description: "Get full details for a specific customer by email address.",
     inputSchema: {
       type: "object",
       properties: {
-        customer_email: { type: "string", description: "Customer email address" },
+        email: { type: "string", description: "Customer email address" },
       },
-      required: ["customer_email"],
+      required: ["email"],
+    },
+  },
+  {
+    name: "get_customer_info_from_key",
+    description: "Get customer info associated with a specific license activation key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        activation_key: { type: "string", description: "The QLM activation/license key" },
+      },
+      required: ["activation_key"],
     },
   },
   {
@@ -109,20 +121,93 @@ const TOOLS = [
       required: ["order_id"],
     },
   },
+  {
+    name: "get_order_status",
+    description: "Get the status of a specific order.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "The QLM order ID" },
+      },
+      required: ["order_id"],
+    },
+  },
+  {
+    name: "get_subscription_expiry",
+    description: "Get the subscription expiry date for a license key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        activation_key: { type: "string", description: "The QLM activation/license key" },
+      },
+      required: ["activation_key"],
+    },
+  },
+  {
+    name: "get_product_info",
+    description: "Get product information including name and version details.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        product_id: { type: "string", description: "The QLM product ID" },
+        major_version: { type: "string", description: "Major version number" },
+        minor_version: { type: "string", description: "Minor version number" },
+      },
+      required: ["product_id", "major_version", "minor_version"],
+    },
+  },
+  {
+    name: "get_all_licenses",
+    description: "Get all licenses/customers in the system. Use for generating the full report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filter: { type: "string", description: "Optional SQL-style filter e.g. \"ActivationKey like '%ABC%'\"" },
+      },
+    },
+  },
 ];
 
 async function callTool(name, args) {
   switch (name) {
     case "get_license_info":
       return qlmRequest("GetLicenseInfo", { is_activationkey: args.activation_key });
+
     case "get_activation_status":
-      return qlmRequest("GetActivationStatus", { is_activationkey: args.activation_key });
+      return qlmRequest("GetLicenseKeyInformation", { is_activationkey: args.activation_key });
+
     case "search_customers":
-      return qlmRequest("GetCustomers", { is_search: args.query });
-    case "get_customer_orders":
-      return qlmRequest("GetOrders", { is_email: args.customer_email });
+      return qlmRequest("GetCustomersInfo", {
+        is_filter: `FullName like '%${args.query}%' OR Email like '%${args.query}%' OR Company like '%${args.query}%'`,
+      });
+
+    case "get_customer_info":
+      return qlmRequest("GetCustomerInfo", { is_email: args.email });
+
+    case "get_customer_info_from_key":
+      return qlmRequest("GetCustomerInfoFromActivationKey", { is_activationkey: args.activation_key });
+
     case "get_order":
       return qlmRequest("GetOrder", { is_orderid: args.order_id });
+
+    case "get_order_status":
+      return qlmRequest("GetOrderStatus", { is_orderid: args.order_id });
+
+    case "get_subscription_expiry":
+      return qlmRequest("GetSubscriptionExpiryDate", { is_activationkey: args.activation_key });
+
+    case "get_product_info":
+      return qlmRequest("GetProductInfo", {
+        is_productid: args.product_id,
+        is_majorversion: args.major_version,
+        is_minorversion: args.minor_version,
+      });
+
+    case "get_all_licenses":
+      return qlmRequest("GetCustomersInfo", {
+        is_filter: args.filter || "",
+      });
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -150,7 +235,6 @@ function createMCPServer() {
 // ─── Express App ─────────────────────────────────────────────────────────────
 const app = express();
 
-// CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -214,13 +298,12 @@ app.post("/oauth/token", (req, res) => {
   res.json({ access_token, token_type: "bearer", expires_in: 86400 });
 });
 
-// ─── MCP Streamable HTTP Transport ───────────────────────────────────────────
+// ─── MCP Streamable HTTP ──────────────────────────────────────────────────────
 const sessions = new Map();
 
 app.post("/sse", async (req, res) => {
-  console.log("MCP POST /sse received");
+  console.log("MCP POST /sse");
   const sessionId = req.headers["mcp-session-id"];
-
   let transport;
   if (sessionId && sessions.has(sessionId)) {
     transport = sessions.get(sessionId);
@@ -228,42 +311,30 @@ app.post("/sse", async (req, res) => {
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
-        console.log(`MCP session initialized: ${id}`);
+        console.log(`Session initialized: ${id}`);
         sessions.set(id, transport);
       },
     });
-    transport.onclose = () => {
-      if (transport.sessionId) sessions.delete(transport.sessionId);
-    };
+    transport.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); };
     const server = createMCPServer();
     await server.connect(transport);
   }
-
   await transport.handleRequest(req, res, req.body);
 });
 
 app.get("/sse", async (req, res) => {
-  console.log("MCP GET /sse received");
   const sessionId = req.headers["mcp-session-id"];
-  if (!sessionId || !sessions.has(sessionId)) {
-    return res.status(400).json({ error: "No valid session ID" });
-  }
+  if (!sessionId || !sessions.has(sessionId)) return res.status(400).json({ error: "No valid session" });
   await sessions.get(sessionId).handleRequest(req, res);
 });
 
 app.delete("/sse", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (sessionId && sessions.has(sessionId)) {
-    sessions.get(sessionId).close();
-    sessions.delete(sessionId);
-  }
+  if (sessionId && sessions.has(sessionId)) { sessions.get(sessionId).close(); sessions.delete(sessionId); }
   res.status(200).end();
 });
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", server: "qlm-mcp-server", version: "1.0.0" });
-});
+app.get("/health", (req, res) => res.json({ status: "ok", server: "qlm-mcp-server", version: "1.0.0" }));
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`QLM MCP Server listening on port ${PORT}`);
