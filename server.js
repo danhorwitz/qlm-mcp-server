@@ -149,12 +149,21 @@ function createMCPServer() {
 
 // ─── Express App ─────────────────────────────────────────────────────────────
 const app = express();
+
+// CORS — must be before all other middleware
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, mcp-session-id");
+  if (req.method === "OPTIONS") return res.status(200).end();
+  next();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── OAuth 2.0 Endpoints ─────────────────────────────────────────────────────
 
-// Protected resource metadata
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
   res.json({
     resource: BASE_URL,
@@ -162,7 +171,6 @@ app.get("/.well-known/oauth-protected-resource", (req, res) => {
   });
 });
 
-// Authorization server metadata
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   res.json({
     issuer: BASE_URL,
@@ -175,7 +183,7 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
   });
 });
 
-// Dynamic client registration (RFC 7591)
+// Dynamic client registration
 app.post("/oauth/register", (req, res) => {
   const client_id = crypto.randomBytes(16).toString("hex");
   const client_secret = crypto.randomBytes(32).toString("hex");
@@ -190,11 +198,9 @@ app.post("/oauth/register", (req, res) => {
   res.status(201).json(client);
 });
 
-// Authorization endpoint — auto-approves (server is secured via Railway + QLM credentials)
+// Authorization endpoint — auto-approves
 app.get("/oauth/authorize", (req, res) => {
-  const { redirect_uri, state, code_challenge, code_challenge_method } = req.query;
-  const client_id = req.query.client_id;
-
+  const { redirect_uri, state, code_challenge, code_challenge_method, client_id } = req.query;
   const code = crypto.randomBytes(16).toString("hex");
   authCodes.set(code, {
     client_id,
@@ -203,7 +209,6 @@ app.get("/oauth/authorize", (req, res) => {
     code_challenge_method,
     expiresAt: Date.now() + 300000,
   });
-
   const redirectUrl = new URL(redirect_uri);
   redirectUrl.searchParams.set("code", code);
   if (state) redirectUrl.searchParams.set("state", state);
@@ -213,61 +218,42 @@ app.get("/oauth/authorize", (req, res) => {
 // Token endpoint
 app.post("/oauth/token", (req, res) => {
   const { grant_type, code, code_verifier } = req.body;
-
   if (grant_type !== "authorization_code") {
     return res.status(400).json({ error: "unsupported_grant_type" });
   }
-
   const authCode = authCodes.get(code);
   if (!authCode || authCode.expiresAt < Date.now()) {
     return res.status(400).json({ error: "invalid_grant" });
   }
-
-  // Verify PKCE if used
   if (authCode.code_challenge && code_verifier) {
     const hash = crypto.createHash("sha256").update(code_verifier).digest("base64url");
     if (hash !== authCode.code_challenge) {
       return res.status(400).json({ error: "invalid_grant" });
     }
   }
-
   authCodes.delete(code);
-
   const access_token = crypto.randomBytes(32).toString("hex");
   accessTokens.add(access_token);
-
+  console.log(`Access token issued`);
   res.json({ access_token, token_type: "bearer", expires_in: 86400 });
 });
 
-// ─── Auth Middleware ──────────────────────────────────────────────────────────
-function requireAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith("Bearer ")) {
-    res.set(
-      "WWW-Authenticate",
-      `Bearer realm="${BASE_URL}", resource_metadata="${BASE_URL}/.well-known/oauth-protected-resource"`
-    );
-    return res.status(401).json({ error: "unauthorized" });
-  }
-  const token = auth.slice(7);
-  if (!accessTokens.has(token)) {
-    return res.status(401).json({ error: "invalid_token" });
-  }
-  next();
-}
-
-// ─── MCP SSE Endpoints ────────────────────────────────────────────────────────
+// ─── MCP SSE Endpoints (no auth check — OAuth already handled above) ─────────
 const sessions = new Map();
 
-app.get("/sse", requireAuth, async (req, res) => {
+app.get("/sse", async (req, res) => {
+  console.log("SSE connection established");
   const transport = new SSEServerTransport("/messages", res);
   const server = createMCPServer();
   sessions.set(transport.sessionId, { transport, server });
-  res.on("close", () => sessions.delete(transport.sessionId));
+  res.on("close", () => {
+    console.log(`SSE session closed: ${transport.sessionId}`);
+    sessions.delete(transport.sessionId);
+  });
   await server.connect(transport);
 });
 
-app.post("/messages", requireAuth, async (req, res) => {
+app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const session = sessions.get(sessionId);
   if (!session) return res.status(404).json({ error: "Session not found" });
