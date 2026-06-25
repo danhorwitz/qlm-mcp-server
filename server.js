@@ -119,6 +119,11 @@ const TOOLS = [
     description: "Get all licenses/customers in the system for generating the full report.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "test_connection",
+    description: "Test the connection to QLM and verify credentials are working.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 async function callTool(name, args) {
@@ -139,6 +144,12 @@ async function callTool(name, args) {
       return qlmSoap("GetSubscriptionExpiryDate", { is_activationkey: args.activation_key });
     case "get_all_licenses":
       return qlmSoap("GetCustomersInfo", { eFieldName: "", fieldOperator: "", fieldValue: "", dataSet: "" });
+    case "test_connection":
+      return qlmSoap("GetServerInfo", {
+        dbVersion: "0",
+        dateLastProductUpdate: "0001-01-01T00:00:00",
+        dateLastAffiliatesUpdate: "0001-01-01T00:00:00",
+      });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
