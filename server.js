@@ -158,13 +158,13 @@ async function callTool(name, args) {
     case "get_subscription_expiry":
       return qlmSoap("GetSubscriptionExpiryDate", { is_activationkey: args.activation_key });
     case "get_all_licenses":
-      return qlmSoap("GetLicenseInfo", {
-        fieldName: "",
-        fieldOperator: "",
-        fieldValue: "",
-        historyTable: "false",
-        dataSet: "",
-      });
+  return qlmSoap("GetLicenseInfo", {
+    fieldName: "ActivationKey",
+    fieldOperator: "like",
+    fieldValue: "%",
+    historyTable: "false",
+    dataSet: "",
+  });
     case "test_connection":
       return qlmSoap("GetServerInfo", {
         dbVersion: "0",
