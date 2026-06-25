@@ -129,8 +129,7 @@ async function callTool(name, args) {
       return qlmSoap("GetLicenseKeyInformation", { is_activationkey: args.activation_key });
     case "search_customers":
       return qlmSoap("GetCustomersInfo", {
-        eFieldName: "Email", fieldOperator: "like",
-        fieldValue: `%${args.query}%`, dataSet: "",
+        eFieldName: "", fieldOperator: "", fieldValue: args.query, dataSet: "",
       });
     case "get_customer_info_from_key":
       return qlmSoap("GetCustomerInfoFromActivationKey", { is_activationkey: args.activation_key });
