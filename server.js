@@ -1,11 +1,9 @@
 import express from "express";
 import crypto from "crypto";
-import { XMLParser } from "fast-xml-parser";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-// ─── Config ──────────────────────────────────────────────────────────────────
 const QLM_BASE_URL = process.env.QLM_BASE_URL?.replace(/\/$/, "");
 const QLM_VENDOR = process.env.QLM_VENDOR;
 const QLM_PASSWORD = process.env.QLM_PASSWORD;
@@ -19,23 +17,34 @@ if (!QLM_BASE_URL || !QLM_VENDOR || !QLM_PASSWORD) {
   process.exit(1);
 }
 
-// ─── SOAP Helper ─────────────────────────────────────────────────────────────
-const xmlParser = new XMLParser({ ignoreAttributes: false, parseTagValue: true });
-
+// ─── Simple XML helpers (no dependencies) ────────────────────────────────────
 function escapeXml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  return String(str ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-function buildSoap(method, params = {}) {
-  const bodyInner = Object.entries(params)
-    .map(([k, v]) => `<${k}>${escapeXml(v)}</${k}>`)
-    .join("\n        ");
+function extractXml(xml, tag) {
+  const match = xml.match(new RegExp(`<(?:[^:]+:)?${tag}[^>]*>([\\s\\S]*?)<\\/(?:[^:]+:)?${tag}>`, "i"));
+  return match ? match[1].trim() : null;
+}
 
+function parseSoapResponse(xml, method) {
+  const responseNode = extractXml(xml, `${method}Response`);
+  if (!responseNode) return { raw: xml };
+  const dataSet = extractXml(responseNode, "dataSet");
+  const result = extractXml(responseNode, "result");
+  if (dataSet) {
+    try { return { data: JSON.parse(dataSet), result }; } catch { /* not JSON */ }
+    return { dataSet, result };
+  }
+  return { result, raw: responseNode };
+}
+
+// ─── SOAP Request ─────────────────────────────────────────────────────────────
+function buildSoap(method, params = {}) {
+  const body = Object.entries(params)
+    .map(([k, v]) => `<${k}>${escapeXml(v)}</${k}>`).join("\n        ");
   return `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -50,7 +59,7 @@ function buildSoap(method, params = {}) {
   </soap:Header>
   <soap:Body>
     <${method} xmlns="http://www.interactive-studios.net/qlmweb">
-        ${bodyInner}
+        ${body}
     </${method}>
   </soap:Body>
 </soap:Envelope>`;
@@ -59,7 +68,6 @@ function buildSoap(method, params = {}) {
 async function qlmSoap(method, params = {}) {
   const soapBody = buildSoap(method, params);
   console.log(`SOAP → ${method}`);
-
   const response = await fetch(QLM_BASE_URL, {
     method: "POST",
     headers: {
@@ -68,42 +76,17 @@ async function qlmSoap(method, params = {}) {
     },
     body: soapBody,
   });
-
   const text = await response.text();
-  console.log(`SOAP ← ${response.status} | ${text.slice(0, 300)}`);
-
-  if (!response.ok) throw new Error(`SOAP error ${response.status}: ${text.slice(0, 300)}`);
-
-  try {
-    const parsed = xmlParser.parse(text);
-    const envelope = parsed["soap:Envelope"] || parsed["Envelope"];
-    const body = envelope?.["soap:Body"] || envelope?.["Body"];
-    const responseNode = body?.[`${method}Response`];
-
-    if (!responseNode) return { raw: text };
-
-    // dataSet is often a JSON string — try to parse it
-    const dataSet = responseNode.dataSet;
-    const result = responseNode.result;
-
-    if (dataSet && typeof dataSet === "string" && dataSet.trim().startsWith("{")) {
-      try { return { data: JSON.parse(dataSet), result }; } catch { /* fall through */ }
-    }
-    if (dataSet && typeof dataSet === "string" && dataSet.trim().startsWith("[")) {
-      try { return { data: JSON.parse(dataSet), result }; } catch { /* fall through */ }
-    }
-
-    return responseNode;
-  } catch (e) {
-    return { raw: text, parseError: e.message };
-  }
+  console.log(`SOAP ← ${response.status} | ${text.slice(0, 400)}`);
+  if (!response.ok) throw new Error(`SOAP ${response.status}: ${text.slice(0, 300)}`);
+  return parseSoapResponse(text, method);
 }
 
-// ─── MCP Tools ───────────────────────────────────────────────────────────────
+// ─── Tools ────────────────────────────────────────────────────────────────────
 const TOOLS = [
   {
     name: "get_license_info",
-    description: "Look up full license details by activation key — product, version, seats, expiry, status.",
+    description: "Look up full license details by activation key.",
     inputSchema: { type: "object", properties: { activation_key: { type: "string" } }, required: ["activation_key"] },
   },
   {
@@ -133,7 +116,7 @@ const TOOLS = [
   },
   {
     name: "get_all_licenses",
-    description: "Get all licenses/customers in the system. Use for generating the full report.",
+    description: "Get all licenses/customers in the system for generating the full report.",
     inputSchema: { type: "object", properties: {} },
   },
 ];
@@ -142,46 +125,28 @@ async function callTool(name, args) {
   switch (name) {
     case "get_license_info":
       return qlmSoap("GetLicenseInfo", { is_activationkey: args.activation_key });
-
     case "get_activation_status":
       return qlmSoap("GetLicenseKeyInformation", { is_activationkey: args.activation_key });
-
     case "search_customers":
       return qlmSoap("GetCustomersInfo", {
-        eFieldName: "Email",
-        fieldOperator: "like",
-        fieldValue: `%${args.query}%`,
-        dataSet: "",
+        eFieldName: "Email", fieldOperator: "like",
+        fieldValue: `%${args.query}%`, dataSet: "",
       });
-
     case "get_customer_info_from_key":
       return qlmSoap("GetCustomerInfoFromActivationKey", { is_activationkey: args.activation_key });
-
     case "get_order":
       return qlmSoap("GetOrder", { is_orderid: args.order_id });
-
     case "get_subscription_expiry":
       return qlmSoap("GetSubscriptionExpiryDate", { is_activationkey: args.activation_key });
-
     case "get_all_licenses":
-      return qlmSoap("GetCustomersInfo", {
-        eFieldName: "",
-        fieldOperator: "",
-        fieldValue: "",
-        dataSet: "",
-      });
-
+      return qlmSoap("GetCustomersInfo", { eFieldName: "", fieldOperator: "", fieldValue: "", dataSet: "" });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 }
 
-// ─── MCP Server ───────────────────────────────────────────────────────────────
 function createMCPServer() {
-  const server = new Server(
-    { name: "qlm-mcp-server", version: "1.0.0" },
-    { capabilities: { tools: {} } }
-  );
+  const server = new Server({ name: "qlm-mcp-server", version: "1.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -213,7 +178,6 @@ app.use(express.urlencoded({ extended: true }));
 
 app.get("/.well-known/oauth-protected-resource", (req, res) =>
   res.json({ resource: BASE_URL, authorization_servers: [BASE_URL] }));
-
 app.get("/.well-known/oauth-authorization-server", (req, res) =>
   res.json({
     issuer: BASE_URL,
@@ -224,14 +188,12 @@ app.get("/.well-known/oauth-authorization-server", (req, res) =>
     grant_types_supported: ["authorization_code"],
     code_challenge_methods_supported: ["S256"],
   }));
-
 app.post("/oauth/register", (req, res) => {
   const client_id = crypto.randomBytes(16).toString("hex");
   const client_secret = crypto.randomBytes(32).toString("hex");
   registeredClients.set(client_id, { client_id, client_secret, ...req.body });
   res.status(201).json({ client_id, client_secret, ...req.body });
 });
-
 app.get("/oauth/authorize", (req, res) => {
   const { redirect_uri, state, code_challenge, code_challenge_method, client_id } = req.query;
   const code = crypto.randomBytes(16).toString("hex");
@@ -241,7 +203,6 @@ app.get("/oauth/authorize", (req, res) => {
   if (state) url.searchParams.set("state", state);
   res.redirect(url.toString());
 });
-
 app.post("/oauth/token", (req, res) => {
   const { grant_type, code, code_verifier } = req.body;
   if (grant_type !== "authorization_code") return res.status(400).json({ error: "unsupported_grant_type" });
@@ -259,7 +220,6 @@ app.post("/oauth/token", (req, res) => {
 
 // ─── MCP Transport ────────────────────────────────────────────────────────────
 const sessions = new Map();
-
 app.post("/sse", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   let transport;
@@ -275,21 +235,16 @@ app.post("/sse", async (req, res) => {
   }
   await transport.handleRequest(req, res, req.body);
 });
-
 app.get("/sse", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   if (!sessionId || !sessions.has(sessionId)) return res.status(400).json({ error: "No valid session" });
   await sessions.get(sessionId).handleRequest(req, res);
 });
-
 app.delete("/sse", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   if (sessionId && sessions.has(sessionId)) { sessions.get(sessionId).close(); sessions.delete(sessionId); }
   res.status(200).end();
 });
+app.get("/health", (req, res) => res.json({ status: "ok" }));
 
-app.get("/health", (req, res) => res.json({ status: "ok", server: "qlm-mcp-server", version: "1.0.0" }));
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`QLM MCP Server on port ${PORT} | ${BASE_URL}`);
-});
+app.listen(PORT, "0.0.0.0", () => console.log(`QLM MCP Server on port ${PORT} | ${BASE_URL}`));
