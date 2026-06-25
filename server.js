@@ -134,16 +134,21 @@ const TOOLS = [
 async function callTool(name, args) {
   switch (name) {
     case "get_license_info":
-      return qlmSoap("GetLicenseInfo", { is_activationkey: args.activation_key });
+      return qlmSoap("GetLicenseInfo", {
+        fieldName: "ActivationKey",
+        fieldOperator: "=",
+        fieldValue: args.activation_key,
+        historyTable: "false",
+        dataSet: "",
+      });
     case "get_activation_status":
       return qlmSoap("GetLicenseKeyInformation", { is_activationkey: args.activation_key });
     case "search_customers":
-      return qlmSoap("GetDataSetEx2", {
-        eTable: "Licenses",
-        filter: `FullName like '%${args.query}%' OR Email like '%${args.query}%' OR Company like '%${args.query}%'`,
-        maxRecords: 100,
-        distinctFieldValue: "",
-        uniqueIDField: "",
+      return qlmSoap("GetLicenseInfo", {
+        fieldName: "FullName",
+        fieldOperator: "like",
+        fieldValue: `%${args.query}%`,
+        historyTable: "false",
         dataSet: "",
       });
     case "get_customer_info_from_key":
@@ -153,12 +158,11 @@ async function callTool(name, args) {
     case "get_subscription_expiry":
       return qlmSoap("GetSubscriptionExpiryDate", { is_activationkey: args.activation_key });
     case "get_all_licenses":
-      return qlmSoap("GetDataSetEx2", {
-        eTable: "Licenses",
-        filter: "",
-        maxRecords: 5000,
-        distinctFieldValue: "",
-        uniqueIDField: "",
+      return qlmSoap("GetLicenseInfo", {
+        fieldName: "",
+        fieldOperator: "",
+        fieldValue: "",
+        historyTable: "false",
         dataSet: "",
       });
     case "test_connection":
