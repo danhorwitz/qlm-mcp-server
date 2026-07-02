@@ -24,6 +24,17 @@ function escapeXml(str) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
+// QLM's GetLicenseInfo `fieldValue` is dropped directly into a server-side
+// SQL WHERE clause with no quoting/escaping of its own. Without this, any
+// value containing a space/hyphen/letter run breaks QLM's SQL parser (e.g.
+// searching "a" -> "Incorrect syntax near 'a'"), and it's also a SQL
+// injection hole in the other direction. We quote the value ourselves and
+// double up embedded single quotes — the standard escape for this kind of
+// raw-SQL passthrough API.
+function sqlQuote(str) {
+  return `'${String(str ?? "").replace(/'/g, "''")}'`;
+}
+
 function extractXml(xml, tag) {
   const match = xml.match(new RegExp(`<(?:[^:]+:)?${tag}[^>]*>([\\s\\S]*?)<\\/(?:[^:]+:)?${tag}>`, "i"));
   return match ? match[1].trim() : null;
@@ -137,7 +148,7 @@ async function callTool(name, args) {
       return qlmSoap("GetLicenseInfo", {
         fieldName: "ActivationKey",
         fieldOperator: "=",
-        fieldValue: args.activation_key,
+        fieldValue: sqlQuote(args.activation_key),
         historyTable: "false",
         dataSet: "",
       });
@@ -147,7 +158,7 @@ async function callTool(name, args) {
       return qlmSoap("GetLicenseInfo", {
         fieldName: "FullName",
         fieldOperator: "like",
-        fieldValue: `%${args.query}%`,
+        fieldValue: sqlQuote(`%${args.query}%`),
         historyTable: "false",
         dataSet: "",
       });
@@ -158,13 +169,13 @@ async function callTool(name, args) {
     case "get_subscription_expiry":
       return qlmSoap("GetSubscriptionExpiryDate", { is_activationkey: args.activation_key });
     case "get_all_licenses":
-  return qlmSoap("GetLicenseInfo", {
-    fieldName: "ActivationKey",
-    fieldOperator: "like",
-    fieldValue: "%",
-    historyTable: "false",
-    dataSet: "",
-  });
+      return qlmSoap("GetLicenseInfo", {
+        fieldName: "ActivationKey",
+        fieldOperator: "like",
+        fieldValue: sqlQuote("%"),
+        historyTable: "false",
+        dataSet: "",
+      });
     case "test_connection":
       return qlmSoap("GetServerInfo", {
         dbVersion: "0",
